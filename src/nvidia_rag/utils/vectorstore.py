@@ -17,7 +17,7 @@
 1. create_vectorstore_langchain: Create the vector db index for langchain.
 2. get_vectorstore: Get the vectorstore object.
 3. create_collections: Create multiple collections in the Milvus vector database.
-4. get_collection: Get the list of all collection in vectorstore along with the number of rows in each collection.
+4. get_collections: Get the list of all collection in vectorstore along with the number of rows in each collection.
 5. delete_collections: Delete a list of collections from the Milvus vector database.
 6. get_docs_vectorstore_langchain: Retrieve filenames stored in the vector store implemented in LangChain.
 """
@@ -35,6 +35,12 @@ from pymilvus.orm.types import CONSISTENCY_STRONG
 from langchain_milvus import Milvus
 from langchain_core.runnables import RunnableAssign, RunnableLambda
 from opentelemetry import context as otel_context
+from langchain_postgres.v2.engine import PGEngine
+from langchain_postgres.v2.vectorstores import PGVectorStore
+from langchain_postgres.v2.indexes import HNSWIndex, IVFFlatIndex, BaseIndex, DistanceStrategy
+import psycopg2
+from psycopg2 import sql
+
 
 from nvidia_rag.utils.common import get_config
 
@@ -116,6 +122,33 @@ def create_vectorstore_langchain(document_embedder, collection_name: str = "", v
                 f"{config.vector_store.search_type} search type is not supported" + \
                 "Please select from ['hybrid', 'dense']"
             )
+    elif config.vector_store.name == "postgres":
+        logger.debug("Trying to connect to postgres collection: %s", collection_name)
+        if not collection_name:
+            collection_name = os.getenv('COLLECTION_NAME', "vector_db")
+
+        # Connect to Postgres
+        engine = PGEngine.from_connection_string(vdb_endpoint)
+
+        # Ensure the table exists
+        engine.init_vectorstore_table(
+            table_name=collection_name,
+            vector_size=document_embedder.embedding_dim,
+            overwrite_existing=False,
+        )
+
+        vectorstore = PGVectorStore.create_sync(
+            engine=engine,
+            embedding_service=document_embedder,
+            table_name=collection_name,
+        )
+
+        if config.vector_store.index_type == "HNSW":
+            index = HNSWIndex(name="hnsw_index", index_type="hnsw", ef_search=128)
+        else: # By Default IVFFLAT
+            distance_strategy = DistanceStrategy(config.vector_store.distance_strategy)
+            index = IVFFlatIndex(name="ivfflat_index", index_type="ivfflat", distance_strategy=distance_strategy)
+        vectorstore.apply_vector_index(index)
     else:
         raise ValueError(f"{config.vector_store.name} vector database is not supported")
     logger.debug("Vector store created and saved.")
@@ -127,16 +160,14 @@ def get_vectorstore(
         collection_name: str = "",
         vdb_endpoint: str = "") -> VectorStore:
     """
-    Send a vectorstore object.
-    If a Vectorstore object already exists, the function returns that object.
-    Otherwise, it creates a new Vectorstore object and returns it.
+    Return vectorstore object (pgvector).
     """
     return create_vectorstore_langchain(document_embedder, collection_name, vdb_endpoint)
 
 
 def create_collection(collection_name: str, vdb_endpoint: str, dimension: int = 2048, collection_type: str = "text") -> None:
     """
-    Create a new collection in the Milvus vector database.
+    Create a pgvector collection (table) in postgres.
 
     Args:
         collection_name (str): The name of the collection to be created.
@@ -148,34 +179,63 @@ def create_collection(collection_name: str, vdb_endpoint: str, dimension: int = 
         Exception: If the collection was not created successfully.
     """
     config = get_config()
-    try:
-        url = urlparse(vdb_endpoint)
-        connection_alias = f"milvus_{url.hostname}_{url.port}"
-        connections.connect(connection_alias, host=url.hostname, port=url.port)
 
-        create_nvingest_collection(
-            collection_name = collection_name,
-            milvus_uri = vdb_endpoint,
-            sparse = (config.vector_store.search_type == "hybrid"),
-            recreate = False,
-            gpu_index = config.vector_store.enable_gpu_index,
-            gpu_search = config.vector_store.enable_gpu_search,
-            dense_dim = dimension
+    if config.vector_store.name == "milvus":
+        try:
+            url = urlparse(vdb_endpoint)
+            connection_alias = f"milvus_{url.hostname}_{url.port}"
+            connections.connect(connection_alias, host=url.hostname, port=url.port)
+
+            create_nvingest_collection(
+                collection_name = collection_name,
+                milvus_uri = vdb_endpoint,
+                sparse = (config.vector_store.search_type == "hybrid"),
+                recreate = False,
+                gpu_index = config.vector_store.enable_gpu_index,
+                gpu_search = config.vector_store.enable_gpu_search,
+                dense_dim = dimension
+                )
+            connections.disconnect(connection_alias)
+        except Exception as e:
+            logger.error(f"Failed to create collection {collection_name}: {str(e)}")
+            raise Exception(f"Failed to create collection {collection_name}: {str(e)}")
+    if config.vector_store.name == "postgres":    
+        try:
+            url = urlparse(vdb_endpoint)
+            dsn = (
+                f"dbname={parsed.path.lstrip('/')}"
+                f" user={parsed.username}"
+                f" password={parsed.password}"
+                f" host={parsed.hostname}"
+                f" port={parsed.port}"
             )
-        connections.disconnect(connection_alias)
-    except Exception as e:
-        logger.error(f"Failed to create collection {collection_name}: {str(e)}")
-        raise Exception(f"Failed to create collection {collection_name}: {str(e)}")
+            conn = psycopg2.connect(dsn)
+            cur = conn.cursor()
+            cur.execute(sql.SQL("""
+                CREATE TABLE IF NOT EXISTS {} (
+                    id SERIAL PRIMARY KEY,
+                    content TEXT,
+                    metadata JSONB,
+                    embedding VECTOR(%s)
+                )
+            """).format(sql.Identifier(collection_name)), [dimension])
+            conn.commit()
+            cur.close()
+            conn.close()
+            logger.info(f"Collection '{collection_name}' created successfully in Postgres.")
+        except Exception as e:
+            logger.error(f"Failed to create collection {collection_name}: {str(e)}")
+            raise Exception(f"Failed to create collection {collection_name}: {str(e)}")
 
 
 def create_collections(collection_names: List[str], vdb_endpoint: str, dimension: int = 2048, collection_type: str = "text") -> Dict[str, any]:
     """
-    Create multiple collections in the Milvus vector database.
+    Create multiple pgvector tables.
 
     Args:
-        vdb_endpoint (str): The Milvus database endpoint.
+        vdb_endpoint (str): The Postgres database endpoint.
         collection_names (List[str]): List of collection names to be created.
-        dimension (int): The dimension of the embedding vectors (default: 768).
+        dimension (int): The dimension of the embedding vectors (default: 2048).
         collection_type (str): The type of collection to be created. Reserved for future use.
 
     Returns:
@@ -229,12 +289,11 @@ def create_collections(collection_names: List[str], vdb_endpoint: str, dimension
         }
 
 
-def get_collection(vdb_endpoint: str = "") -> Dict[str, Any]:
-    """get list of all collection in vectorstore along with the number of rows in each collection.
+def get_collections(vdb_endpoint: str = "") -> Dict[str, Any]:
+    """get list of all collection in pgvector vectorstore along with the number of rows in each collection.
     """
 
     config = get_config()
-
     if config.vector_store.name == "milvus":
         url = urlparse(vdb_endpoint)
         connection_alias = f"milvus_{url.hostname}_{url.port}"
@@ -268,12 +327,37 @@ def get_collection(vdb_endpoint: str = "") -> Dict[str, Any]:
 
         return collection_info
 
+    if config.vector_store.name == "postgres":
+        conn = psycopg2.connect(vdb_endpoint)
+        cur = conn.cursor()
+
+        # Get list of collections
+        cur.execute("""
+            SELECT table_name
+            FROM information_schema.columns
+            WHERE column_name = 'embedding'
+              AND udt_name = 'vector'
+        """)
+        tables = [r[0] for r in cur.fetchall()]
+
+        # Get document count for each collection
+        collection_info = []
+        for table in tables:
+            cur.execute(sql.SQL("SELECT COUNT(*) FROM {}").format(sql.Identifier(table)))
+            num_entities = cur.fetchone()[0]
+            collection_info.append({"collection_name": table, "num_entities": num_entities})
+
+        cur.close()
+        conn.close()
+
+        return collection_info
+
     raise ValueError(f"{config.vector_store.name} vector database does not support collection name")
 
 
 def delete_collections(vdb_endpoint: str, collection_names: List[str]) -> dict:
     """
-    Delete a list of collections from the Milvus vector database.
+    Delete a list of pgvector tables from the Postgres vector database.
 
     Args:
         vdb_endpoint (str): The Milvus database endpoint.
@@ -292,33 +376,59 @@ def delete_collections(vdb_endpoint: str, collection_names: List[str]) -> dict:
                 "total_success": 0,
                 "total_failed": 0 }
 
-        # Parse endpoint and connect
-        url = urlparse(vdb_endpoint)
-        connection_alias = f"milvus_{url.hostname}_{url.port}"
-        connections.connect(connection_alias, host=url.hostname, port=url.port)
+        config = get_config()
 
-        deleted_collections = []
-        failed_collections = []
+        if config.vector_store.name == "milvus":
+            # Parse endpoint and connect
+            url = urlparse(vdb_endpoint)
+            connection_alias = f"milvus_{url.hostname}_{url.port}"
+            connections.connect(connection_alias, host=url.hostname, port=url.port)
 
-        for collection in collection_names:
-            try:
-                if utility.has_collection(collection, using=connection_alias):
-                    utility.drop_collection(collection, using=connection_alias)
+            deleted_collections = []
+            failed_collections = []
+
+            for collection in collection_names:
+                try:
+                    if utility.has_collection(collection, using=connection_alias):
+                        utility.drop_collection(collection, using=connection_alias)
+                        deleted_collections.append(collection)
+                        logger.info(f"Deleted collection: {collection}")
+                    else:
+                        failed_collections.append(collection)
+                        logger.warning(f"Collection {collection} not found.")
+                except Exception as e:
+                    failed_collections.append(collection)
+                    logger.error(f"Failed to delete collection {collection}: {str(e)}")
+
+            # Disconnect from Milvus
+            connections.disconnect(connection_alias)
+
+            # Delete the metadata schema from the collection
+            for collection_name in deleted_collections:
+                delete_entities(DEFAULT_METADATA_SCHEMA_COLLECTION, vdb_endpoint, f"collection_name == '{collection_name}'")
+
+
+        if config.vector_store.name == "postgres":
+            # Connect to Postgres
+            conn = psycopg2.connect(vdb_endpoint)
+            cur = conn.cursor()
+
+            deleted_collections = []
+            failed_collections = []
+
+            for collection in collection_names:
+                try:
+                    cur.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier(collection)))
                     deleted_collections.append(collection)
                     logger.info(f"Deleted collection: {collection}")
-                else:
+                except Exception as e:
                     failed_collections.append(collection)
-                    logger.warning(f"Collection {collection} not found.")
-            except Exception as e:
-                failed_collections.append(collection)
-                logger.error(f"Failed to delete collection {collection}: {str(e)}")
+                    logger.error(f"Failed to delete collection {collection}: {str(e)}")
 
-        # Disconnect from Milvus
-        connections.disconnect(connection_alias)
-
-        # Delete the metadata schema from the collection
-        for collection_name in deleted_collections:
-            delete_entities(DEFAULT_METADATA_SCHEMA_COLLECTION, vdb_endpoint, f"collection_name == '{collection_name}'")
+            # Disconnect from Postgres
+            conn.commit()
+            cur.close()
+            conn.close()
 
         return {
             "message": "Collection deletion process completed.",
@@ -375,6 +485,19 @@ def get_docs_vectorstore_langchain(
                     filepaths_added.add(extract_filename(item))
 
                 return documents_list
+
+        if settings.vector_store.name == "postgres":
+            # Getting all the ID's > 0
+            docs = vectorstore.similarity_search("", k=100)  # fetch all with empty query
+            documents_list = []
+            filepaths_added = set()
+            for d in docs:
+                fname = os.path.basename(d.metadata.get("source", "unknown"))
+                if fname not in filepaths_added:
+                    documents_list.append({"document_name": fname, "metadata": d.metadata})
+                    filepaths_added.add(fname)
+
+            return documents_list
     except Exception as e:
         logger.error("Error occurred while retrieving documents: %s", e)
     return []
@@ -407,6 +530,15 @@ def del_docs_vectorstore_langchain(vectorstore: VectorStore, filenames: List[str
                 if resp.delete_count == 0:
                     logger.info("File does not exist in the vectorstore")
                     return False
+            if settings.vector_store.name == "postgres":
+                # Delete documents from pgvector table by ids.
+                try:
+                    vectorstore.delete(ids=filenames)
+                    return True
+                except Exception as e:
+                    logger.error(f"Error deleting docs: {e}")
+                    return False
+            
         if deleted and settings.vector_store.name == "milvus":
             # Force flush the vectorstore after deleting documents to ensure that the changes are reflected in the vectorstore
             vectorstore.col.flush()
@@ -426,28 +558,32 @@ def create_metadata_collection_schema():
 
 def create_metadata_schema_collection(vdb_endpoint: str) -> None:
     """Create metadata schema collection for the collection."""
+    return
     try:
-        url = urlparse(vdb_endpoint)
-        connection_alias = f"milvus_{url.hostname}_{url.port}"
-        connections.connect(connection_alias, host=url.hostname, port=url.port)
+        config = get_config()
+        print(config.vector_store.name)
+        if config.vector_store.name == "milvus":
+            url = urlparse(vdb_endpoint)
+            connection_alias = f"milvus_{url.hostname}_{url.port}"
+            connections.connect(connection_alias, host=url.hostname, port=url.port)
 
-        client = MilvusClient(vdb_endpoint)
+            client = MilvusClient(vdb_endpoint)
 
-        # Check if the metadata schema collection exists
-        if not client.has_collection(DEFAULT_METADATA_SCHEMA_COLLECTION):
-            # Create the metadata schema collection
-            schema = create_metadata_collection_schema()
-            index_params = MilvusClient.prepare_index_params()
-            index_params.add_index(
-                field_name="vector",
-                index_name="dense_index",
-                index_type="FLAT",
-                metric_type="L2",
-            )
-            client.create_collection(collection_name=DEFAULT_METADATA_SCHEMA_COLLECTION, schema=schema, index_params=index_params, consistency_level=CONSISTENCY_STRONG)
-            logger.info(f"Metadata schema collection created at {vdb_endpoint}")
+            # Check if the metadata schema collection exists
+            if not client.has_collection(DEFAULT_METADATA_SCHEMA_COLLECTION):
+                # Create the metadata schema collection
+                schema = create_metadata_collection_schema()
+                index_params = MilvusClient.prepare_index_params()
+                index_params.add_index(
+                    field_name="vector",
+                    index_name="dense_index",
+                    index_type="FLAT",
+                    metric_type="L2",
+                )
+                client.create_collection(collection_name=DEFAULT_METADATA_SCHEMA_COLLECTION, schema=schema, index_params=index_params, consistency_level=CONSISTENCY_STRONG)
+                logger.info(f"Metadata schema collection created at {vdb_endpoint}")
 
-        connections.disconnect(connection_alias)
+            connections.disconnect(connection_alias)
 
     except Exception as e:
         logger.error(f"Failed to create metadata schema collection: {str(e)}")
@@ -591,7 +727,11 @@ def retreive_docs_from_retriever(retriever, retriever_query: str, expr: str, ote
     retriever_chain = {"context": retriever_lambda} | RunnableAssign({"context": lambda input: input["context"]})
     retriever_docs = retriever_chain.invoke(retriever_query, config={'run_name':'retriever'})
     docs = retriever_docs.get("context", [])
-    collection_name = retriever.vectorstore.collection_name
+    config = get_config()
+    if config.vector_store.name == "milvus":
+        collection_name = retriever.vectorstore.collection_name
+    if config.vector_store.name == "postgres":
+        collection_name = getattr(retriever.vectorstore, "table_name", "unknown")
     end_time = time.time()
     latency = end_time - start_time
     logger.info(f"Retriever latency: {latency:.4f} seconds")

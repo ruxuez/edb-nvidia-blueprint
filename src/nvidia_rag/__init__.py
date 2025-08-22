@@ -14,16 +14,22 @@
 # limitations under the License.
 
 # Import the necessary modules and classes for the package
-import logging
-logger = logging.getLogger(__name__)
+# import logging
+# logger = logging.getLogger(__name__)
 
-try:
-    from .rag_server.main import NvidiaRAG
-except ModuleNotFoundError as e:
-    logger.debug(f"Error importing NvidiaRAG: {e}")
+# try:
+#     from .rag_server.main import NvidiaRAG
+# except ModuleNotFoundError as e:
+#     logger.debug(f"Error importing NvidiaRAG: {e}")
 
-try:
-    from .ingestor_server.main import NvidiaRAGIngestor
-except ModuleNotFoundError as e:
-    logger.debug(f"Error importing NvidiaRAGIngestor: {e}")
+# try:
+#     from .ingestor_server.main import NvidiaRAGIngestor
+# except ModuleNotFoundError as e:
+#     logger.debug(f"Error importing NvidiaRAGIngestor: {e}")
+
+from .rag_server.main import NvidiaRAG
+from .ingestor_server.main import NvidiaRAGIngestor
+
+__all__ = ["NvidiaRAG", "NvidiaRAGIngestor"]
+
 

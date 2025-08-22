@@ -30,12 +30,13 @@ class VectorStoreConfig(ConfigWizard):
 
     name: str = configfield(
         "name",
-        default="milvus",
-        help_txt="The name of vector store",  # supports milvus
+        default="postgres",
+        help_txt="The name of vector store",  # supports postgres
     )
     url: str = configfield(
         "url",
-        default="http://localhost:19530",
+        # default="http://localhost:19530",
+        default="dbname=postgres user=postgres password=changeme host=localhost port=5432",
         help_txt="The host of the machine running Vector Store DB",
     )
     nlist: int = configfield(
@@ -50,8 +51,14 @@ class VectorStoreConfig(ConfigWizard):
     )
     index_type: str = configfield(
         "index_type",
-        default="GPU_CAGRA",
-        help_txt="Index of the vector db",  # IVF Flat for milvus
+        default="IVFFLAT",
+        help_txt="Index of the vector db: IVFFLAT or HNSW",  # IVF Flat
+    )
+
+    distance_strategy: str = configfield(
+        "distance_strategy",
+        default="EUCLIDean", # dense or hybrid
+        help_txt="Enumerator of the Distance strategies - 'EUCLIDEAN', 'COSINE_DISTANCE' or 'INNER_PRODUCT'",
     )
 
     enable_gpu_index: bool = configfield(

@@ -71,7 +71,7 @@ from nvidia_rag.utils.vectorstore import (
     del_docs_vectorstore_langchain,
     create_collection,
     create_collections,
-    get_collection,
+    get_collections,
     delete_collections,
     create_metadata_schema_collection,
     add_metadata_schema,
@@ -106,7 +106,7 @@ class NvidiaRAGIngestor():
         filepaths: List[str],
         delete_files_after_ingestion: bool = False,
         blocking: bool = False,
-        vdb_endpoint: str = CONFIG.vector_store.url,
+        vdb_endpoint: str = CONFIG.vdb_endpoint,
         collection_name: str = "multimodal_data",
         split_options: Dict[str, Any] = {"chunk_size": CONFIG.nv_ingest.chunk_size, "chunk_overlap": CONFIG.nv_ingest.chunk_overlap},
         custom_metadata: List[Dict[str, Any]] = [],
@@ -269,15 +269,16 @@ class NvidiaRAGIngestor():
             # Peform ingestion using nvingest for all files that have not failed
             # Check if the provided collection_name exists in vector-DB
             # Connect to Milvus to check for collection availability
-            url = urlparse(vdb_endpoint)
-            connection_alias = f"milvus_{url.hostname}_{url.port}"
-            connections.connect(connection_alias, host=url.hostname, port=url.port)
+            if CONFIG.vector_store.name == "milvus":
+                url = urlparse(vdb_endpoint)
+                connection_alias = f"milvus_{url.hostname}_{url.port}"
+                connections.connect(connection_alias, host=url.hostname, port=url.port)
 
-            try:
-                if not utility.has_collection(collection_name, using=connection_alias):
-                    raise ValueError(f"Collection {collection_name} does not exist in {vdb_endpoint}. Ensure a collection is created using POST /collections endpoint first.")
-            finally:
-                connections.disconnect(connection_alias)
+                try:
+                    if not utility.has_collection(collection_name, using=connection_alias):
+                        raise ValueError(f"Collection {collection_name} does not exist in {vdb_endpoint}. Ensure a collection is created using POST /collections endpoint first.")
+                finally:
+                    connections.disconnect(connection_alias)
 
             start_time = time.time()
             results, failures = await self.__nvingest_upload_doc(
@@ -479,9 +480,10 @@ class NvidiaRAGIngestor():
         """
         try:
             # Create the metadata schema collection
-            create_metadata_schema_collection(vdb_endpoint)
+            if CONFIG.vector_store.name == "milvus":
+                create_metadata_schema_collection(vdb_endpoint)
             # Check if the collection already exists
-            existing_collections = get_collection(vdb_endpoint)
+            existing_collections = get_collections(vdb_endpoint)
             if collection_name in [f["collection_name"] for f in existing_collections]:
                 return {
                     "message": f"Collection {collection_name} already exists.",
@@ -492,7 +494,8 @@ class NvidiaRAGIngestor():
 
             # Add metadata schema
             if metadata_schema:
-                add_metadata_schema(collection_name, vdb_endpoint, metadata_schema)
+                if CONFIG.vector_store.name == "milvus":
+                    add_metadata_schema(collection_name, vdb_endpoint, metadata_schema)
 
             return {
                 "message": f"Collection {collection_name} created successfully.",
@@ -552,7 +555,7 @@ class NvidiaRAGIngestor():
             logger.info(f"Getting collection list from {vdb_endpoint}")
 
             # Fetch collections from vector store
-            collection_info = get_collection(vdb_endpoint)
+            collection_info = get_collections(vdb_endpoint)
 
             return {
                 "message": "Collections listed successfully.",
@@ -990,13 +993,14 @@ class NvidiaRAGIngestor():
             - filepaths: List[str] - List of filepaths
         """
         # Get the metadata schema from the collection
-        metadata_schema = get_metadata_schema(collection_name, vdb_endpoint)
-        logger.info(f"Metadata schema for collection {collection_name}: {metadata_schema}")
+        if CONFIG.vector_store.name == "milvus":
+            metadata_schema = get_metadata_schema(collection_name, vdb_endpoint)
+            logger.info(f"Metadata schema for collection {collection_name}: {metadata_schema}")
 
-        metadata_schema_key_type_map = {
-            metadata_schema_item.get("name"): metadata_schema_item.get("type")
-            for metadata_schema_item in metadata_schema
-        }
+            metadata_schema_key_type_map = {
+                metadata_schema_item.get("name"): metadata_schema_item.get("type")
+                for metadata_schema_item in metadata_schema
+            }
         filenames = set([os.path.basename(filepath) for filepath in filepaths])
 
         # Verify the metadata schema

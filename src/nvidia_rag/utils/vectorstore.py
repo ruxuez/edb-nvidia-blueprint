@@ -130,10 +130,16 @@ def create_vectorstore_langchain(document_embedder, collection_name: str = "", v
         # Connect to Postgres
         engine = PGEngine.from_connection_string(vdb_endpoint)
 
+        # Get embedding dimension
+        try:
+            vector_size = document_embedder.embedding_dim
+        except AttributeError:
+            vector_size = 512
+
         # Ensure the table exists
         engine.init_vectorstore_table(
             table_name=collection_name,
-            vector_size=document_embedder.embedding_dim,
+            vector_size=vector_size,
             overwrite_existing=False,
         )
 
@@ -146,7 +152,7 @@ def create_vectorstore_langchain(document_embedder, collection_name: str = "", v
         if config.vector_store.index_type == "HNSW":
             index = HNSWIndex(name="hnsw_index", index_type="hnsw", ef_search=128)
         else: # By Default IVFFLAT
-            distance_strategy = DistanceStrategy(config.vector_store.distance_strategy)
+            distance_strategy = DistanceStrategy[config.vector_store.distance_strategy]
             index = IVFFlatIndex(name="ivfflat_index", index_type="ivfflat", distance_strategy=distance_strategy)
         vectorstore.apply_vector_index(index)
     else:
@@ -165,7 +171,7 @@ def get_vectorstore(
     return create_vectorstore_langchain(document_embedder, collection_name, vdb_endpoint)
 
 
-def create_collection(collection_name: str, vdb_endpoint: str, dimension: int = 2048, collection_type: str = "text") -> None:
+def create_collection(collection_name: str, vdb_endpoint: str, dimension: int = 512, collection_type: str = "text") -> None:
     """
     Create a pgvector collection (table) in postgres.
 
@@ -201,7 +207,7 @@ def create_collection(collection_name: str, vdb_endpoint: str, dimension: int = 
             raise Exception(f"Failed to create collection {collection_name}: {str(e)}")
     if config.vector_store.name == "postgres":    
         try:
-            url = urlparse(vdb_endpoint)
+            parsed = urlparse(vdb_endpoint)
             dsn = (
                 f"dbname={parsed.path.lstrip('/')}"
                 f" user={parsed.username}"
@@ -228,14 +234,14 @@ def create_collection(collection_name: str, vdb_endpoint: str, dimension: int = 
             raise Exception(f"Failed to create collection {collection_name}: {str(e)}")
 
 
-def create_collections(collection_names: List[str], vdb_endpoint: str, dimension: int = 2048, collection_type: str = "text") -> Dict[str, any]:
+def create_collections(collection_names: List[str], vdb_endpoint: str, dimension: int = 512, collection_type: str = "text") -> Dict[str, any]:
     """
     Create multiple pgvector tables.
 
     Args:
         vdb_endpoint (str): The Postgres database endpoint.
         collection_names (List[str]): List of collection names to be created.
-        dimension (int): The dimension of the embedding vectors (default: 2048).
+        dimension (int): The dimension of the embedding vectors (default: 512).
         collection_type (str): The type of collection to be created. Reserved for future use.
 
     Returns:
@@ -294,6 +300,8 @@ def get_collections(vdb_endpoint: str = "") -> Dict[str, Any]:
     """
 
     config = get_config()
+    print(config.vector_store.name)
+    print(config.vector_store.url)
     if config.vector_store.name == "milvus":
         url = urlparse(vdb_endpoint)
         connection_alias = f"milvus_{url.hostname}_{url.port}"
@@ -328,7 +336,15 @@ def get_collections(vdb_endpoint: str = "") -> Dict[str, Any]:
         return collection_info
 
     if config.vector_store.name == "postgres":
-        conn = psycopg2.connect(vdb_endpoint)
+        parsed = urlparse(vdb_endpoint)
+        dsn = (
+            f"dbname={parsed.path.lstrip('/')}"
+            f" user={parsed.username}"
+            f" password={parsed.password}"
+            f" host={parsed.hostname}"
+            f" port={parsed.port}"
+        )
+        conn = psycopg2.connect(dsn)
         cur = conn.cursor()
 
         # Get list of collections
@@ -410,7 +426,15 @@ def delete_collections(vdb_endpoint: str, collection_names: List[str]) -> dict:
 
         if config.vector_store.name == "postgres":
             # Connect to Postgres
-            conn = psycopg2.connect(vdb_endpoint)
+            parsed = urlparse(vdb_endpoint)
+            dsn = (
+                f"dbname={parsed.path.lstrip('/')}"
+                f" user={parsed.username}"
+                f" password={parsed.password}"
+                f" host={parsed.hostname}"
+                f" port={parsed.port}"
+            )
+            conn = psycopg2.connect(dsn)
             cur = conn.cursor()
 
             deleted_collections = []

@@ -25,9 +25,10 @@ services:
 
       ##===Vector DB specific configurations===
       # URL on which vectorstore is hosted
-      APP_VECTORSTORE_URL: "http://milvus:19530"
+      # APP_VECTORSTORE_URL: "http://milvus:19530"
+      APP_VECTORSTORE_URL: "postgresql+psycopg2://postgres:changeme@localhost:5432/postgres"
       # Type of vectordb used to store embedding supported type milvus
-      APP_VECTORSTORE_NAME: "milvus"
+      APP_VECTORSTORE_NAME: "postgres"
       # Type of vectordb search to be used
       APP_VECTORSTORE_SEARCHTYPE: ${APP_VECTORSTORE_SEARCHTYPE:-"dense"} # Can be dense or hybrid
       # Boolean to enable GPU index for milvus vectorstore specific to nvingest

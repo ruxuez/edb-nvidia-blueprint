@@ -36,7 +36,7 @@ class VectorStoreConfig(ConfigWizard):
     url: str = configfield(
         "url",
         # default="http://localhost:19530",
-        default="dbname=postgres user=postgres password=changeme host=localhost port=5432",
+        default="postgresql+psycopg2://postgres:changeme@localhost:5432/postgres",
         help_txt="The host of the machine running Vector Store DB",
     )
     nlist: int = configfield(
@@ -57,7 +57,7 @@ class VectorStoreConfig(ConfigWizard):
 
     distance_strategy: str = configfield(
         "distance_strategy",
-        default="EUCLIDean", # dense or hybrid
+        default="EUCLIDEAN", # dense or hybrid
         help_txt="Enumerator of the Distance strategies - 'EUCLIDEAN', 'COSINE_DISTANCE' or 'INNER_PRODUCT'",
     )
 

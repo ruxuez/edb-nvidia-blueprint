@@ -82,6 +82,8 @@ from nvidia_rag.utils.vectorstore import (
 logger = logging.getLogger(__name__)
 
 CONFIG = get_config()
+print(CONFIG.embeddings.model_name)
+print(CONFIG.embeddings.server_url)
 DOCUMENT_EMBEDDER = document_embedder = get_embedding_model(model=CONFIG.embeddings.model_name, url=CONFIG.embeddings.server_url)
 NV_INGEST_CLIENT_INSTANCE = get_nv_ingest_client()
 MINIO_OPERATOR = get_minio_operator()
@@ -100,13 +102,12 @@ class NvidiaRAGIngestor():
     _config = get_config()
     _vdb_upload_bulk_size = 500
 
-
     async def upload_documents(
         self,
         filepaths: List[str],
         delete_files_after_ingestion: bool = False,
         blocking: bool = False,
-        vdb_endpoint: str = CONFIG.vdb_endpoint,
+        vdb_endpoint: str = CONFIG.vector_store.url,
         collection_name: str = "multimodal_data",
         split_options: Dict[str, Any] = {"chunk_size": CONFIG.nv_ingest.chunk_size, "chunk_overlap": CONFIG.nv_ingest.chunk_overlap},
         custom_metadata: List[Dict[str, Any]] = [],
@@ -123,7 +124,6 @@ class NvidiaRAGIngestor():
             split_options (Dict[str, Any], optional): Options for splitting documents. Defaults to chunk_size and chunk_overlap from settings.
             custom_metadata (List[Dict[str, Any]], optional): Custom metadata to add to documents. Defaults to empty list.
         """
-
         try:
 
             if not blocking:
@@ -181,7 +181,7 @@ class NvidiaRAGIngestor():
             - split_options: Dict[str, Any] - Options for splitting documents
             - custom_metadata: List[Dict[str, Any]] - Custom metadata to be added to documents
         """
-
+        print("Uploading files:", filepaths)
         vdb_endpoint = vdb_endpoint or CONFIG.vector_store.url
         logger.info("Performing ingestion in collection_name: %s", collection_name)
         logger.debug("Filepaths for ingestion: %s", filepaths)
